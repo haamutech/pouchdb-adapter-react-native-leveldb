@@ -36,6 +36,7 @@ class LevelDB extends FakeLevelDB {
          const dbKey = useStorageKey(name, storageKey);
 
          // Include only keys that map correctly to this database.
+         // TODO: how to handle if item is a buffer?
          if (dbKey)
             this.put(dbKey, localStorage.getItem(storageKey));
       }

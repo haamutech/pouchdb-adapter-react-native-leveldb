@@ -11,7 +11,7 @@ This adapter is still pretty much work in progress (early PoC is done already). 
 - [ ] Support attachments
 - [ ] Support compaction
 - [ ] Implement all `TODO` comments
-- [ ] Prove that `LevelDB` works in `backend.js`
+- [x] Prove that `LevelDB` works in `backend.js`
 - [x] Prove that `LevelDB` is available in `backend.native.js`
 - [x] Prove that `destroyLevelDatabase` works in `backend.js`
 - [x] Prove that `destroyLevelDatabase` works in `backend.native.js`
