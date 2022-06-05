@@ -1,0 +1,37 @@
+{
+  "name": "pouchdb-adapter-react-native-leveldb",
+  "version": "0.0.1",
+  "description": "PouchDB adapter for React Native that uses LevelDB as its backing store.",
+  "main": "./src/adapter.js",
+  "scripts": {
+    "test": "jest --coverage",
+    "test:watch": "nodemon -L -w src -w test -e js -x jest --coverage"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haamutech/pouchdb-adapter-react-native-leveldb.git"
+  },
+  "keywords": [
+    "react-native",
+    "pouchdb",
+    "leveldb"
+  ],
+  "author": "Jussi Raunio <jussi@haamu.tech>",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/haamutech/pouchdb-adapter-react-native-leveldb/issues"
+  },
+  "homepage": "https://github.com/haamutech/pouchdb-adapter-react-native-leveldb#readme",
+  "dependencies": {
+    "pouchdb-errors": "^7.3.0",
+    "pouchdb-json": "^7.3.0",
+    "pouchdb-merge": "^7.3.0",
+    "pouchdb-adapter-utils": "^7.3.0",
+    "react-native-leveldb": "^3.0.4",
+    "react-native-get-random-values": "^1.8.0"
+  },
+  "devDependencies": {
+    "jest": "^28.1.0",
+    "nodemon": "^2.0.16"
+  }
+}
