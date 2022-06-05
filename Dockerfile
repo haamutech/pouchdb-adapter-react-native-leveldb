@@ -13,6 +13,7 @@ RUN npm install
 RUN npm audit --audit-level=critical
 
 # Copy application sources.
+COPY .npmignore .
 COPY jest.config.js .
 COPY src src
 COPY test test
