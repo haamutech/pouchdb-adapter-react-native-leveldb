@@ -15,21 +15,25 @@ This adapter is still pretty much work in progress (early PoC is done already). 
 - [x] Prove that `LevelDB` is available in `backend.native.js`
 - [x] Prove that `destroyLevelDatabase` works in `backend.js`
 - [x] Prove that `destroyLevelDatabase` works in `backend.native.js`
-- [ ] Prove that `_info` works
+- [x] Prove that `_info` works
 - [ ] Prove that `_put` works
 - [ ] Prove that `_get` works
 - [ ] Prove that `_allDocs` works
-- [ ] Prove that `_getRevisionTree` works
+- [x] Prove that `_getRevisionTree` works
 - [ ] Prove that `_bulkDocs` works
-- [ ] Prove that `_close` works
-- [ ] Prove that `_destroy` works
+- [x] Prove that `_close` works
+- [x] Prove that `_destroy` works
 
 
 ### Usage
 
+Install peer dependency packages [pouchdb-core](https://www.npmjs.com/package/pouchdb-core), [react-native-leveldb](https://www.npmjs.com/package/react-native-leveldb) and [react-native-get-random-values](https://www.npmjs.com/package/react-native-get-random-values):
+
 ```bash
-npm install pouchdb
+npm install pouchdb-core react-native-leveldb react-native-get-random-values --save
 ```
+
+Register the plugin and create a database instance:
 
 ```js
 PouchDB.plugin(require("pouchdb-adapter-react-native-leveldb"));

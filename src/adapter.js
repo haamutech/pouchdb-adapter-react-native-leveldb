@@ -1,4 +1,5 @@
 const { LevelDB, destroyLevelDatabase } = require("./backend");
+const { pad16 } = require("./utils");
 
 const {
    winningRev: getWinningRev,
@@ -36,28 +37,23 @@ const {
 
 // https://github.com/pouchdb/pouchdb/blob/master/packages/node_modules/pouchdb-core/src/adapter.js
 
-function formatSeq(value) {
-   return ("0000000000000000" + value).slice(-16);
-}
-
-function parseSeq(value) {
-   return parseInt(value, 10);
-}
-
 function nextTick(f) {
    return (...args) => {
       setTimeout(() => f.apply(this, args), 0);
    };
 }
 
-function safeApiCall(f, ...args) {
+function safeApiCall(functionWithCallback, ...args) {
    const { length, [length - 1]: callback } = args;
 
    try {
-      f.apply(this, args);
+      functionWithCallback.apply(this, args);
    }
    catch (e) {
-      callback(e);
+      if (["PouchError", "CustomPouchError"].indexOf(e.constructor?.name) >= 0)
+         callback(e);
+      else
+         throw e;
    }
 }
 
@@ -71,27 +67,25 @@ function documentStore(key) {
 }
 
 function bySequence(key) {
-   return `by-sequence/${formatSeq(key)}`;
+   return `by-sequence/${pad16(key)}`;
 }
 
 function metaStore(key) {
    return `meta-store/${key}`;
 }
 
-function getDocCountUpdateSeqKey() {
+function docCountUpdateSeqKey() {
    return "doc_count+update_seq";
 }
 
-const Handlers = new Map();
-
 function RNLevelDBAdapter(opts, callback) {
-   const databaseName = `${opts.name}.db`;
+   const databaseName = opts.name ? `${opts.name}.db` : undefined;
 
    function use() {
-      if (!Handlers.has(databaseName))
+      if (!RNLevelDBAdapter.Handlers.has(databaseName))
          throw createError(NOT_OPEN);
 
-      return Handlers.get(databaseName);
+      return RNLevelDBAdapter.Handlers.get(databaseName);
    }
 
    function getJson(key) {
@@ -131,38 +125,29 @@ function RNLevelDBAdapter(opts, callback) {
 
          const handler = use();
 
-         if (doc._id === undefined)
+         if (!doc._id)
             return callback(createError(MISSING_ID));
 
          // Otherwise, handle the case where either a new document is created or existing is replaced.
 
          doc = parseDoc(doc, opts.new_edits !== false, this.__opts);
 
-         if (doc.error)
-            return callback(doc.error);
-
          if (doc.metadata && !doc.metadata.rev_map)
             doc.metadata.rev_map = {};
 
-         // Update database sequence number bookkeeping value.
-         ++handler.updateSeq;
-
-         // Set revision and sequence number.
-         doc.metadata.rev_map[doc.metadata.rev] =
-            doc.metadata.seq =
-               handler.updateSeq;
-
-         const docDeleted = doc.data._deleted === true;
+         const docDeleted = doc.metadata.deleted === true;
          let metadataOk = false;
          let sequenceOk = false;
 
+         // Retrieve existing document.
          this._get(doc.metadata.id, { rev: doc.metadata.rev }, (_, existingDoc) => {
             let docCountDelta = 0;
 
-            // Update document count bookkeeping value.
-            if (existingDoc)
+            // Decrement document count if we are deleting existing document.
+            if (existingDoc) {
                if (docDeleted)
                   docCountDelta = -1;
+            }
 
             // Return error if document is deleted but it does not exist.
             else if (docDeleted)
@@ -172,19 +157,23 @@ function RNLevelDBAdapter(opts, callback) {
             else
                docCountDelta = +1;
 
-            // Update document count bookkeeping value to include non-deleted documents.
+            // Update database bookkeeping values.
             handler.docCount += docCountDelta;
+            const nextSeq = ++handler.updateSeq
+
+            // Map next sequence number to revision.
+            doc.metadata.rev_map[doc.metadata.rev] = nextSeq;
 
             // Apply metadata and data modifications to database.
             try {
                handler.db.put(documentStore(doc.metadata.id), safeJsonStringify(doc.metadata));
                metadataOk = true;
 
-               handler.db.put(bySequence(handler.updateSeq), safeJsonStringify(doc.data));
+               handler.db.put(bySequence(nextSeq), safeJsonStringify(doc.data));
                sequenceOk = true;
 
                // Store updated bookkeeping values.
-               handler.db.put(metaStore(getDocCountUpdateSeqKey()), new Uint32Array([
+               handler.db.put(metaStore(docCountUpdateSeqKey()), new Uint32Array([
                   handler.docCount,
                   handler.updateSeq,
                ]).buffer);
@@ -211,9 +200,9 @@ function RNLevelDBAdapter(opts, callback) {
 
                // Restore the state where new updated sequence did not exist.
                if (sequenceOk)
-                  handler.db.delete(bySequence(handler.updateSeq));
+                  handler.db.delete(bySequence(nextSeq));
 
-               // Revert bookkeeping values back to original.
+               // Revert bookkeeping values.
                handler.docCount -= docCountDelta;
                --handler.updateSeq;
 
@@ -365,7 +354,7 @@ function RNLevelDBAdapter(opts, callback) {
          const { db } = use();
 
          db.close();
-         Handlers.delete(databaseName);
+         RNLevelDBAdapter.Handlers.delete(databaseName);
 
          callback();
       },
@@ -384,23 +373,25 @@ function RNLevelDBAdapter(opts, callback) {
       const db = new LevelDB(databaseName, true, false);
 
       try {
-         const [docCount, updateSeq] = new Uint32Array(db.getBuf(metaStore(getDocCountUpdateSeqKey())) ?? [0, 0]);
+         const [docCount, updateSeq] = new Uint32Array(db.getBuf(metaStore(docCountUpdateSeqKey())) ?? [0, 0]);
 
-         Handlers.set(databaseName, {
+         RNLevelDBAdapter.Handlers.set(databaseName, {
             docCount,
             updateSeq,
             db,
          });
 
-         callback(null);
+         callback(null, this);
       }
       catch (e) {
-         Handlers.delete(databaseName);
+         RNLevelDBAdapter.Handlers.delete(databaseName);
          db.close();
          throw e;
       }
    }, callback);
 }
+
+RNLevelDBAdapter.Handlers = new Map();
 
 RNLevelDBAdapter.use_prefix = false;
 

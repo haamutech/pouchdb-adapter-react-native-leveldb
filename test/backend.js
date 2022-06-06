@@ -114,7 +114,5 @@ describe("LevelDB", () => {
          ["key", `value for ${data[0]}`],
          ["other", `value for ${data[2]}`],
       ]);
-
-      jest.restoreAllMocks();
    });
 });
