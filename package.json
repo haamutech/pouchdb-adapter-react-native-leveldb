@@ -27,8 +27,7 @@
     "pouchdb-json": "^7.3.0",
     "pouchdb-merge": "^7.3.0",
     "pouchdb-adapter-utils": "^7.3.0",
-    "react-native-leveldb": "^3.0.4",
-    "react-native-get-random-values": "^1.8.0"
+    "react-native-leveldb": "^3.0.4"
   },
   "devDependencies": {
     "jest": "^28.1.0",
@@ -36,6 +35,8 @@
   },
   "peerDependencies": {
     "react-native": "*",
-    "pouchdb-core": ">=7.0.0"
+    "pouchdb-core": ">=7.0.0",
+    "react-native-get-random-values": ">=1.8.0",
+    "react-native-leveldb": ">=3.0.4"
   }
 }
