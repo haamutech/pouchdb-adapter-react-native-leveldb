@@ -15,6 +15,8 @@ RUN npm audit --audit-level=critical
 # Copy application sources.
 COPY .npmignore .
 COPY jest.config.js .
+COPY README.md .
+COPY LICENSE .
 COPY src src
 COPY test test
 
