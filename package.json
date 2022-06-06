@@ -26,12 +26,12 @@
     "pouchdb-errors": "^7.3.0",
     "pouchdb-json": "^7.3.0",
     "pouchdb-merge": "^7.3.0",
-    "pouchdb-adapter-utils": "^7.3.0",
-    "react-native-leveldb": "^3.0.4"
+    "pouchdb-adapter-utils": "^7.3.0"
   },
   "devDependencies": {
     "jest": "^28.1.0",
-    "nodemon": "^2.0.16"
+    "nodemon": "^2.0.16",
+    "react-native-leveldb": "^3.0.4"
   },
   "peerDependencies": {
     "react-native": "*",
