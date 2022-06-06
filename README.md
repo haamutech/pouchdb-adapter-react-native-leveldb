@@ -10,6 +10,7 @@ This adapter is still pretty much work in progress (early PoC is done already). 
 
 - [ ] Support attachments
 - [ ] Support compaction
+- [ ] Support autolinking; currently `react-native-leveldb` is not linked without listing it as a depedency in parent `package.json`
 - [ ] Implement all `TODO` comments
 - [x] Prove that `LevelDB` works in `backend.js`
 - [x] Prove that `LevelDB` is available in `backend.native.js`
