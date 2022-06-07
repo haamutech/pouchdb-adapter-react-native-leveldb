@@ -1,11 +1,17 @@
 const install = require("../src/adapter");
 const { spyLevelDBConstructor, LevelDB, destroyLevelDatabase } = require("../src/backend");
 const { pad16 } = require("../src/utils");
+const { toArraybuf } = jest.requireActual("react-native-leveldb/lib/commonjs/fake");
 
 const {
    safeJsonParse,
-   safeJsonStringify
+   safeJsonStringify,
 } = require("pouchdb-json");
+
+const {
+   MISSING_DOC,
+   createError,
+} = require("pouchdb-errors");
 
 jest.mock("../src/backend", () => {
    const { FakeLevelDB } = jest.requireActual("react-native-leveldb/lib/commonjs/fake");
@@ -102,22 +108,24 @@ describe("RNLevelDBAdapter", () => {
          expect(getBuf).toHaveBeenCalledWith("meta-store/doc_count+update_seq");
       });
 
-      it("creates a database handler", async () => {
+      it("creates a database handler and initializes bookkeeping values", async () => {
+         jest.spyOn(LevelDB.prototype, "getBuf").mockReturnValue([3, 42]);
+
          await createAdapter(name);
 
          expect(Adapter.Handlers.has(databaseName)).toBe(true);
 
          const handler = Adapter.Handlers.get(databaseName);
 
-         expect(handler.docCount).toBe(0);
-         expect(handler.updateSeq).toBe(0);
+         expect(handler.docCount).toBe(3);
+         expect(handler.updateSeq).toBe(42);
          expect(handler.db.constructor.name).toBe("MockLevelDB");
       });
    });
 
    describe("_info", () => {
       it("returns info structure", async () => {
-         jest.spyOn(LevelDB.prototype, "getBuf").mockImplementation(() => [42, 3]);
+         jest.spyOn(LevelDB.prototype, "getBuf").mockReturnValue([42, 3]);
 
          const adapter = await createAdapter();
          const [value] = await promisify(adapter._info);
@@ -198,41 +206,59 @@ describe("RNLevelDBAdapter", () => {
       });
    });
 
-   describe("_put", () => {
-      it("requires document _id", async () => {
+   describe("_bulkDocs", () => {
+      it("requires docs list", async () => {
          const adapter = await createAdapter();
-         const doc = {};
 
-         await expect(promisify(adapter._put, doc, {})).rejects.toThrow("_id is required for puts");
+         await expect(promisify(adapter._bulkDocs, {}, {})).rejects.toThrow("Missing JSON list of 'docs'");
       });
 
       it("inserts new document", async () => {
          const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
 
          const doc = {
             _id: "doc-id-1",
             key: "value",
          };
 
-         adapter._get = jest
-            .fn()
-            .mockImplementation((id, opts, callback) => callback(new Error(), null));
+         const put = jest.spyOn(db, "put");
 
-         const [value] = await promisify(adapter._put, doc, {});
+         const [[value]] = await promisify(adapter._bulkDocs, { docs: [doc] }, {});
 
-         expect(adapter._get).toHaveBeenCalled();
-
-         const { docCount, updateSeq, db } = Adapter.Handlers.get();
+         const { docCount, updateSeq } = Adapter.Handlers.get();
 
          const metadata = safeJsonParse(db.getStr(`document-store/${doc._id}`));
          const seq = metadata.rev_map[metadata.rev];
 
          const data = safeJsonParse(db.getStr(`by-sequence/${pad16(seq)}`));
 
+         const bookkeeping = db.getBuf("meta-store/doc_count+update_seq");
+
          expect(value).toEqual({
             ok: true,
             id: metadata.id,
             rev: metadata.rev,
+         });
+
+         expect(metadata).toEqual({
+            id: "doc-id-1",
+            rev_tree: [
+               {
+                  pos: 1,
+                  ids: [
+                     "ff002d9c0442a077f8d349f04fb61113",
+                     {
+                        status: "available",
+                     },
+                     [],
+                  ],
+               },
+            ],
+            rev: "1-ff002d9c0442a077f8d349f04fb61113",
+            rev_map: {
+               "1-ff002d9c0442a077f8d349f04fb61113": 1,
+            },
          });
 
          expect(data).toEqual({
@@ -241,90 +267,331 @@ describe("RNLevelDBAdapter", () => {
 
          expect(updateSeq).toBe(seq);
          expect(docCount).toBe(1);
+
+         expect(new Uint8Array(bookkeeping))
+            .toEqual(new Uint8Array(toArraybuf(Uint32Array.of(docCount, updateSeq))));
+
+         expect(put.mock.calls).toEqual([
+            [`document-store/${doc._id}`, expect.anything()],
+            [`by-sequence/${pad16(seq)}`, expect.anything()],
+            ["meta-store/doc_count+update_seq", expect.anything()],
+         ]);
       });
 
-      it("requires that document to be deleted exists", async () => {
+      it("rolls back insert on error", async () => {
          const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
 
          const doc = {
             _id: "doc-id-1",
-            _deleted: true
+            key: "value",
          };
 
-         adapter._get = jest
-            .fn()
-            .mockImplementation((id, opts, callback) => callback(new Error(), null));
+         {
+            const actualPut = db.put;
 
-         await expect(promisify(adapter._put, doc, {})).rejects.toThrow("missing");
+            db.put = jest.fn((k, v) => {
+               if (k === "meta-store/doc_count+update_seq")
+                  throw new Error("ball");
+
+               return actualPut.call(db, k, v);
+            });
+         }
+
+         const del = jest.spyOn(db, "delete");
+
+         const [[value]] = await promisify(adapter._bulkDocs, { docs: [doc] }, {});
+
+         expect(value.message).toEqual("ball");
+
+         const metadata = db.getStr(`document-store/${doc._id}`);
+
+         expect(metadata).toBe(null);
+
+         const data = safeJsonParse(db.getStr(`by-sequence/${pad16(1)}`));
+
+         expect(data).toBe(null);
 
          const { docCount, updateSeq } = Adapter.Handlers.get();
 
          expect(updateSeq).toBe(0);
          expect(docCount).toBe(0);
+
+         expect(del.mock.calls).toEqual([
+            [`document-store/${doc._id}`],
+            [`by-sequence/${pad16(1)}`],
+         ]);
+      });
+
+      it("replaces existing document", async () => {
+         jest.spyOn(LevelDB.prototype, "getBuf").mockReturnValueOnce([1, 1]);
+
+         const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
+
+         const doc = {
+            _id: "doc-id-1",
+            key2: "value2",
+         };
+
+         db.put(`document-store/${doc._id}`, safeJsonStringify({
+            id: doc._id,
+            rev_tree: [
+               {
+                  pos: 1,
+                  ids: [
+                     "ff002d9c0442a077f8d349f04fb61113",
+                     {
+                        status: "available",
+                     },
+                     [],
+                  ],
+               },
+            ],
+            rev: "1-ff002d9c0442a077f8d349f04fb61113",
+            rev_map: {
+               "1-ff002d9c0442a077f8d349f04fb61113": 1,
+            },
+         }));
+
+         db.put(`by-sequence/${pad16(1)}`, safeJsonStringify({
+            key: "value",
+         }));
+
+         const put = jest.spyOn(db, "put");
+
+         const [[value]] = await promisify(adapter._bulkDocs, { docs: [doc] }, {});
+
+         const metadata = safeJsonParse(db.getStr(`document-store/${doc._id}`));
+
+         expect(metadata).toEqual({
+            id: "doc-id-1",
+            rev_tree: [
+               {
+                  pos: 1,
+                  ids: [
+                     "ff002d9c0442a077f8d349f04fb61113",
+                     {
+                        status: "available"
+                     },
+                     [],
+                  ],
+               },
+               {
+                  pos: 1,
+                  ids: [
+                     "08758510f84820b60dbaa16e642fcf8b",
+                     {
+                        status: "available"
+                     },
+                     [],
+                  ],
+               },
+            ],
+            rev: "1-08758510f84820b60dbaa16e642fcf8b",
+            rev_map: {
+               "1-ff002d9c0442a077f8d349f04fb61113": 1,
+               "1-08758510f84820b60dbaa16e642fcf8b": 2,
+            },
+         });
+
+         expect(value).toEqual({
+            ok: true,
+            id: metadata.id,
+            rev: metadata.rev,
+         });
+
+         const seq = metadata.rev_map[metadata.rev];
+         const data = safeJsonParse(db.getStr(`by-sequence/${pad16(metadata.rev_map[metadata.rev])}`));
+
+         expect(data).toEqual({
+            key2: "value2",
+         });
+
+         const bookkeeping = db.getBuf("meta-store/doc_count+update_seq");
+         const { docCount, updateSeq } = Adapter.Handlers.get();
+
+         expect(updateSeq).toBe(seq);
+         expect(docCount).toBe(1);
+
+         expect(new Uint8Array(bookkeeping))
+            .toEqual(new Uint8Array(toArraybuf(Uint32Array.of(docCount, updateSeq))));
+
+         expect(put.mock.calls).toEqual([
+            [`document-store/${doc._id}`, expect.anything()],
+            [`by-sequence/${pad16(seq)}`, expect.anything()],
+            ["meta-store/doc_count+update_seq", expect.anything()],
+         ]);
+      });
+
+      it("rolls back document replacement on error", async () => {
+         jest.spyOn(LevelDB.prototype, "getBuf").mockReturnValueOnce([1, 1]);
+
+         const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
+
+         const doc = {
+            _id: "doc-id-1",
+            key2: "value2",
+         };
+
+         const originalMetadata = {
+            id: doc._id,
+            rev_tree: [
+               {
+                  pos: 1,
+                  ids: [
+                     "ff002d9c0442a077f8d349f04fb61113",
+                     {
+                        status: "available",
+                     },
+                     [],
+                  ],
+               },
+            ],
+            rev: "1-ff002d9c0442a077f8d349f04fb61113",
+            rev_map: {
+               "1-ff002d9c0442a077f8d349f04fb61113": 1,
+            },
+         };
+
+         db.put(`document-store/${doc._id}`, safeJsonStringify(originalMetadata));
+
+         const originalData = {
+            key: "value",
+         };
+
+         db.put(`by-sequence/${pad16(1)}`, safeJsonStringify(originalData));
+
+         {
+            const actualPut = db.put;
+
+            db.put = jest.fn((k, v) => {
+               if (k === "meta-store/doc_count+update_seq")
+                  throw new Error("ball");
+
+               return actualPut.call(db, k, v);
+            });
+         }
+
+         const del = jest.spyOn(db, "delete");
+
+         const [[value]] = await promisify(adapter._bulkDocs, { docs: [doc] }, {});
+
+         expect(value.message).toEqual("ball");
+
+         const metadata = safeJsonParse(db.getStr(`document-store/${doc._id}`));
+
+         expect(metadata).toEqual(originalMetadata);
+
+         const { docCount, updateSeq } = Adapter.Handlers.get();
+
+         expect(updateSeq).toBe(1);
+         expect(docCount).toBe(1);
+
+         expect(del.mock.calls).toEqual([
+            [`by-sequence/${pad16(2)}`],
+         ]);
+      });
+
+      it("deletes existing document", async () => {
+         jest.spyOn(LevelDB.prototype, "getBuf").mockReturnValueOnce([1, 1]);
+
+         const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
+
+         const doc = {
+            _id: "doc-id-1",
+            _deleted: true,
+         };
+
+         db.put(`document-store/${doc._id}`, safeJsonStringify({
+            id: doc._id,
+            rev_tree: [
+               {
+                  pos: 1,
+                  ids: [
+                     "ff002d9c0442a077f8d349f04fb61113",
+                     {
+                        status: "available",
+                     },
+                     [],
+                  ],
+               },
+            ],
+            rev: "1-ff002d9c0442a077f8d349f04fb61113",
+            rev_map: {
+               "1-ff002d9c0442a077f8d349f04fb61113": 1,
+            },
+         }));
+
+         db.put(`by-sequence/${pad16(1)}`, {
+            key: "value",
+         });
+
+         const put = jest.spyOn(db, "put");
+
+         const [[value]] = await promisify(adapter._bulkDocs, { docs: [doc] }, {});
+
+         const metadata = safeJsonParse(db.getStr(`document-store/${doc._id}`));
+
+         expect(metadata).toEqual({
+            id: "doc-id-1",
+            deleted: true,
+            rev_tree: [
+               {
+                  pos: 1,
+                  ids: [
+                     "ff002d9c0442a077f8d349f04fb61113",
+                     {
+                        status: "available"
+                     },
+                     [],
+                  ],
+               },
+               {
+                  pos: 1,
+                  ids: [
+                     "2ab15399e3f54a4ef2cd60bf7867c30c",
+                     {
+                        status: "available",
+                        deleted: true
+                     },
+                     [],
+                  ],
+               },
+            ],
+            rev: "1-2ab15399e3f54a4ef2cd60bf7867c30c",
+            rev_map: {
+               "1-ff002d9c0442a077f8d349f04fb61113": 1,
+               "1-2ab15399e3f54a4ef2cd60bf7867c30c": 2,
+            },
+         });
+
+         const seq = metadata.rev_map[metadata.rev];
+         const data = db.getStr(`by-sequence/${pad16(seq)}`);
+
+         expect(data).toBe(null);
+
+         expect(value).toEqual({
+            ok: true,
+            id: metadata.id,
+            rev: metadata.rev,
+         });
+
+         const bookkeeping = db.getBuf("meta-store/doc_count+update_seq");
+         const { docCount, updateSeq } = Adapter.Handlers.get();
+
+         expect(updateSeq).toBe(seq);
+         expect(docCount).toBe(0);
+
+         expect(new Uint8Array(bookkeeping))
+            .toEqual(new Uint8Array(toArraybuf(Uint32Array.of(docCount, updateSeq))));
+
+         expect(put.mock.calls).toEqual([
+            [`document-store/${doc._id}`, expect.anything()],
+            ["meta-store/doc_count+update_seq", expect.anything()],
+         ]);
       });
    });
-
-   /*describe("_get", () => {
-      it("retrieves a specific document and revision", async () => {
-         const adapter = await createAdapter();
-         const { db } = Adapter.Handlers.get();
-
-         const rev = "some rev";
-         const id = "document-id";
-         const seq = "0000000000000000";
-
-         const metadata = {
-            id,
-            rev,
-            rev_map: {
-               [rev]: seq
-            }
-         };
-
-         const data = {
-            _id: id,
-            _rev: rev,
-            key: "value",
-         };
-
-         db.put(`document-store/${id}`, safeJsonStringify(metadata));
-         db.put(`by-sequence/${seq}`, safeJsonStringify(data));
-
-         const [result] = await promisify(adapter._get, id, { rev });
-
-         expect(result.doc).toEqual(data);
-         expect(result.metadata).toEqual(metadata);
-      });
-
-      it("retrieves latest revision of a document", async () => {
-         const adapter = await createAdapter();
-         const { db } = Adapter.Handlers.get();
-
-         const rev = "some rev";
-         const id = "document-id";
-         const seq = "0000000000000000";
-
-         const metadata = {
-            id,
-            rev,
-            rev_map: {
-               [rev]: seq
-            }
-         };
-
-         const data = {
-            _id: id,
-            _rev: rev,
-            key: "value",
-         };
-
-         db.put(`document-store/${id}`, safeJsonStringify(metadata));
-         db.put(`by-sequence/${seq}`, safeJsonStringify(data));
-
-         const [result] = await promisify(adapter._get, id, { rev });
-
-         expect(result.doc).toEqual(data);
-         expect(result.metadata).toEqual(metadata);
-      });
-   });*/
 });

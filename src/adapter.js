@@ -98,16 +98,6 @@ function RNLevelDBAdapter(opts, callback) {
       return value;
    }
 
-   function getBinary(key) {
-      const { db } = use();
-      const value = db.getBuf(key);
-
-      if (!value)
-         throw createError(MISSING_DOC, "missing");
-
-      return value;
-   }
-
    makeApi(this,
 
       function _info(callback) {
@@ -120,94 +110,114 @@ function RNLevelDBAdapter(opts, callback) {
          });
       },
 
-      function _put(doc, opts, callback) {
-         // TODO: support opts.force
+      function _bulkDocs(req, opts, callback) {
 
+         // 'docs' is required in _bulkDocs
+         if (!req?.docs)
+            return callback(createError(MISSING_BULK_DOCS));
+
+         // Create PouchDB internal document structures for input.
+         const docs = req.docs.map(x => parseDoc(x, opts.new_edits !== false, this.__opts));
+         const fetchedDocs = new Map();
          const handler = use();
 
-         if (!doc._id)
-            return callback(createError(MISSING_ID));
+         // Fetch existing docs.
+         for (let i = 0; i < docs.length; ++i) {
+            const id = docs[i].metadata.id;
+            let metadata = fetchedDocs.get(id);
 
-         // Otherwise, handle the case where either a new document is created or existing is replaced.
+            if (!metadata) {
+               metadata = safeJsonParse(handler.db.getStr(documentStore(id)));
 
-         doc = parseDoc(doc, opts.new_edits !== false, this.__opts);
+               if (metadata)
+                  fetchedDocs.set(id, metadata);
+            }
 
-         if (doc.metadata && !doc.metadata.rev_map)
-            doc.metadata.rev_map = {};
+            // Initialize revision map used to map particular revisions
+            // to data sequences.
+            docs[i].metadata.rev_map = metadata?.rev_map;
+         }
 
-         const docDeleted = doc.metadata.deleted === true;
-         let metadataOk = false;
-         let sequenceOk = false;
+         const results = [];
 
-         // Retrieve existing document.
-         this._get(doc.metadata.id, { rev: doc.metadata.rev }, (_, existingDoc) => {
+         processDocs(undefined, docs, this, fetchedDocs, null, results, (doc, rev, isWinningRevDeleted, isNewRevDeleted, isUpdate, delta, resultsIdx, callback) => {
             let docCountDelta = 0;
 
             // Decrement document count if we are deleting existing document.
-            if (existingDoc) {
-               if (docDeleted)
+            if (isUpdate) {
+               if (isNewRevDeleted)
                   docCountDelta = -1;
             }
-
-            // Return error if document is deleted but it does not exist.
-            else if (docDeleted)
-               return callback(createError(MISSING_DOC));
 
             // Increment document count since new document is created.
             else
                docCountDelta = +1;
 
-            // Update database bookkeeping values.
+            const nextSeq = ++handler.updateSeq;
             handler.docCount += docCountDelta;
-            const nextSeq = ++handler.updateSeq
 
             // Map next sequence number to revision.
-            doc.metadata.rev_map[doc.metadata.rev] = nextSeq;
+            doc.metadata.rev_map = {
+               ...doc.metadata.rev_map,
+               [doc.metadata.rev]: nextSeq,
+            };
 
-            // Apply metadata and data modifications to database.
+            let metadataOk = false;
+            let dataOk = !isNewRevDeleted;
+
+            // Apply modifications to database.
             try {
                handler.db.put(documentStore(doc.metadata.id), safeJsonStringify(doc.metadata));
                metadataOk = true;
 
-               handler.db.put(bySequence(nextSeq), safeJsonStringify(doc.data));
-               sequenceOk = true;
+               // Write data if revision is not deleted.
+               if (!isNewRevDeleted) {
+                  handler.db.put(bySequence(nextSeq), safeJsonStringify(doc.data));
+                  dataOk = true;
+               }
 
-               // Store updated bookkeeping values.
-               handler.db.put(metaStore(docCountUpdateSeqKey()), new Uint32Array([
-                  handler.docCount,
-                  handler.updateSeq,
-               ]).buffer);
+               // Update database bookkeeping values.
+               handler.db.put(
+                  metaStore(docCountUpdateSeqKey()),
 
-               callback(null, {
+                  // TODO: should this have .buffer? Due to problems in node/jest 
+                  // it gives headaches in unit testing: https://github.com/nodejs/node/issues/20978
+                  Uint32Array.of(handler.docCount, handler.updateSeq));   
+
+               results[resultsIdx] = {
                   ok: true,
                   id: doc.metadata.id,
                   rev: doc.metadata.rev,
-               });
+               };
             }
 
-            // Rollback modifications if failed.
+            // Rollback the changes on error.
             catch (e) {
                if (metadataOk) {
 
-                  // Restore the state where document did not exist.
-                  if (!existingDoc)
-                     handler.db.delete(documentStore(doc.metadata.id));
+                  // Revert metadata back when updating.
+                  if (isUpdate && fetchedDocs.has(doc.metadata.id))
+                     handler.db.put(documentStore(doc.metadata.id), safeJsonStringify(fetchedDocs.get(doc.metadata.id)));
 
-                  // Otherwise, restore the original document state.
+                  // Otherwise, restore the state where document did not exist.
                   else
-                     handler.db.put(documentStore(doc.metadata.id), existingDoc.metadata);
+                     handler.db.delete(documentStore(doc.metadata.id));
                }
 
-               // Restore the state where new updated sequence did not exist.
-               if (sequenceOk)
+               // Revert data by deleting it.
+               if (dataOk)
                   handler.db.delete(bySequence(nextSeq));
 
-               // Revert bookkeeping values.
+               // Revert database bookkeeping values.
                handler.docCount -= docCountDelta;
                --handler.updateSeq;
 
-               callback(e);
+               results[resultsIdx] = e;
             }
+
+            callback();
+         }, opts, error => {
+            callback(error, results);
          });
       },
 
@@ -247,7 +257,7 @@ function RNLevelDBAdapter(opts, callback) {
          doc._id = metadata.id;
          doc._rev = rev;
 
-         callback(null, { doc, metadata });
+         callback(null, doc);
       },
 
       function _allDocs(opts, callback) {
@@ -327,27 +337,6 @@ function RNLevelDBAdapter(opts, callback) {
          const { rev_tree } = getJson(documentStore(docId));
 
          callback(null, rev_tree);
-      },
-
-      function _bulkDocs({ docs: [head, ...rest] }, opts, callback) {
-         // Nothing to do if there were no documents to modify.
-         if (!head)
-            return callback(null, []);
-
-         this._put(head, opts, nextTick((error, response) => {
-            const responses = (opts?.ctx ?? []).concat([error ?? response]);
-
-            // Handle the next batch.
-            if (rest?.length > 0)
-               this._bulkDocs({ docs: rest }, {
-                  ...opts,
-                  ctx: responses,
-               }, callback);
-
-            // Otherwise, finish the bulk operation.
-            else
-               callback(null, responses);
-         }));
       },
 
       function _close(callback) {
