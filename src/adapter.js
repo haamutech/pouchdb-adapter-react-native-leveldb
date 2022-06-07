@@ -37,29 +37,9 @@ const {
 
 // https://github.com/pouchdb/pouchdb/blob/master/packages/node_modules/pouchdb-core/src/adapter.js
 
-function nextTick(f) {
-   return (...args) => {
-      setTimeout(() => f.apply(this, args), 0);
-   };
-}
-
-function safeApiCall(functionWithCallback, ...args) {
-   const { length, [length - 1]: callback } = args;
-
-   try {
-      functionWithCallback.apply(this, args);
-   }
-   catch (e) {
-      if (["PouchError", "CustomPouchError"].indexOf(e.constructor?.name) >= 0)
-         callback(e);
-      else
-         throw e;
-   }
-}
-
 function makeApi(self, ...methods) {
    for (let i = 0; i < methods.length; ++i)
-      self[methods[i].name] = safeApiCall.bind(self, methods[i]);
+      self[methods[i].name] = methods[i].bind(self);
 }
 
 function documentStore(key) {
@@ -86,16 +66,6 @@ function RNLevelDBAdapter(opts, callback) {
          throw createError(NOT_OPEN);
 
       return RNLevelDBAdapter.Handlers.get(databaseName);
-   }
-
-   function getJson(key) {
-      const { db } = use();
-      const value = safeJsonParse(db.getStr(key));
-
-      if (!value)
-         throw createError(MISSING_DOC, "missing");
-
-      return value;
    }
 
    makeApi(this,
@@ -228,32 +198,39 @@ function RNLevelDBAdapter(opts, callback) {
          // TODO: support opts.conflicts
          // TODO: support opts.attachments
 
-         const metadata = getJson(documentStore(id));
+         const { db } = use();
+         const metadata = safeJsonParse(db.getStr(documentStore(id)));
          let rev = opts.rev;
 
-         // If revision is not given, get the winning rev from metadata.
-         if (!rev) {
+         if (!metadata)
+            return callback(createError(MISSING_DOC, "missing"));
+
+         // Pick the latest revision.
+         if (opts.latest)
+            rev = metadata.rev;
+
+         // Otherwise, if revision is not given, get the winning revision from metadata.
+         // TODO: figure out what the winning rev is and if this works correctly here.
+         else if (!rev)
             rev = getWinningRev(metadata);
 
-            if (isDeleted(metadata, rev))
-               throw createError(MISSING_DOC, "deleted");
-         }
+         // Verify that revision is not deleted.
+         if (isDeleted(metadata, rev))
+            return callback(createError(MISSING_DOC, "deleted"));
 
-         // Otherwise, get the latest revision if requested.
-         else if (opts.latest)
-            rev = getLatest(rev, metadata);
+         const seq = metadata.rev_map && metadata.rev_map[rev];
 
-         const doc = getJson(bySequence(metadata.rev_map[rev]));
+         // Verify that revision map is not corrupted.
+         if (!seq)
+            return callback(createError(INVALID_REV, "corrupted"));
 
-         // Verify that document ID is not corrupted.
-         if (doc._id && doc._id !== metadata.id)
-            throw createError(MISSING_DOC, "id");
+         const doc = safeJsonParse(db.getStr(bySequence(seq)));
 
-         // Verify that document revision is not corrupted.
-         if (doc._rev && doc._rev !== rev)
-            throw createError(MISSING_DOC, "revision");
+         // Verify that data exists.
+         if (!doc)
+            return callback(createError(MISSING_DOC, "missing"));
 
-         // Set ID and revision to match with metadata.
+         // Decorate document with ID and revision from metadata.
          doc._id = metadata.id;
          doc._rev = rev;
 
@@ -301,6 +278,8 @@ function RNLevelDBAdapter(opts, callback) {
                };
 
                if (!docDeleted || opts.deleted === "ok") {
+                  const seq = metadata.rev_map[rev];
+
                   if (docDeleted) {
                      row.value.deleted = true;
 
@@ -308,7 +287,7 @@ function RNLevelDBAdapter(opts, callback) {
                         row.doc = null;
                   }
                   else if (opts.include_docs)
-                     row.doc = getJson(bySequence(metadata.rev_map[rev]));
+                     row.doc = safeJsonParse(db.getStr(bySequence(seq)));
 
                   rows.push(row);
                }
@@ -334,7 +313,8 @@ function RNLevelDBAdapter(opts, callback) {
       },
 
       function _getRevisionTree(docId, callback) {
-         const { rev_tree } = getJson(documentStore(docId));
+         const { db } = use();
+         const { rev_tree } = safeJsonParse(db.getStr(documentStore(docId)));
 
          callback(null, rev_tree);
       },
@@ -358,26 +338,25 @@ function RNLevelDBAdapter(opts, callback) {
       // TODO: support attachments
    );
 
-   safeApiCall(callback => {
-      const db = new LevelDB(databaseName, true, false);
+   
+   const db = new LevelDB(databaseName, true, false);
 
-      try {
-         const [docCount, updateSeq] = new Uint32Array(db.getBuf(metaStore(docCountUpdateSeqKey())) ?? [0, 0]);
+   try {
+      const [docCount, updateSeq] = new Uint32Array(db.getBuf(metaStore(docCountUpdateSeqKey())) ?? [0, 0]);
 
-         RNLevelDBAdapter.Handlers.set(databaseName, {
-            docCount,
-            updateSeq,
-            db,
-         });
+      RNLevelDBAdapter.Handlers.set(databaseName, {
+         docCount,
+         updateSeq,
+         db,
+      });
 
-         callback(null, this);
-      }
-      catch (e) {
-         RNLevelDBAdapter.Handlers.delete(databaseName);
-         db.close();
-         throw e;
-      }
-   }, callback);
+      callback(null, this);
+   }
+   catch (e) {
+      RNLevelDBAdapter.Handlers.delete(databaseName);
+      db.close();
+      callback(e);
+   }
 }
 
 RNLevelDBAdapter.Handlers = new Map();

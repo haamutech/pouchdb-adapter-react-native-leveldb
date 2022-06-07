@@ -179,6 +179,13 @@ describe("RNLevelDBAdapter", () => {
 
          expect(Adapter.Handlers.has(databaseName)).toBe(false);
       });
+
+      it("fails if database is not open", async () => {
+         const adapter = await createAdapter(name);
+
+         await promisify(adapter._close);
+         await expect(promisify(adapter._close)).rejects.toThrow("not open");
+      });
    });
 
    describe("_destroy", () => {
@@ -207,7 +214,7 @@ describe("RNLevelDBAdapter", () => {
    });
 
    describe("_bulkDocs", () => {
-      it("requires docs list", async () => {
+      it("fails if docs list is missing", async () => {
          const adapter = await createAdapter();
 
          await expect(promisify(adapter._bulkDocs, {}, {})).rejects.toThrow("Missing JSON list of 'docs'");
@@ -593,5 +600,258 @@ describe("RNLevelDBAdapter", () => {
             ["meta-store/doc_count+update_seq", expect.anything()],
          ]);
       });
+   });
+
+   describe("_get", () => {
+      it("cannot retrieve non-existing document", async () => {
+         const adapter = await createAdapter();
+
+         await expect(promisify(adapter._get, "doc-id", {})).rejects.toThrow("missing");
+      });
+
+      it("retrieves a specific document revision", async () => {
+         jest.spyOn(LevelDB.prototype, "getBuf").mockReturnValueOnce([1, 2]);
+
+         const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
+
+         const docId = "doc-id-1";
+         const rev = "1-ff002d9c0442a077f8d349f04fb61113";
+
+         db.put(`document-store/${docId}`, safeJsonStringify({
+            id: docId,
+            rev_tree: [
+               {
+                  pos: 1,
+                  ids: [
+                     "ff002d9c0442a077f8d349f04fb61113",
+                     {
+                        status: "available"
+                     },
+                     [],
+                  ],
+               },
+               {
+                  pos: 1,
+                  ids: [
+                     "08758510f84820b60dbaa16e642fcf8b",
+                     {
+                        status: "available"
+                     },
+                     [],
+                  ],
+               },
+            ],
+            rev: "1-08758510f84820b60dbaa16e642fcf8b",
+            rev_map: {
+               "1-ff002d9c0442a077f8d349f04fb61113": 1,
+               "1-08758510f84820b60dbaa16e642fcf8b": 2,
+            },
+         }));
+
+         db.put(`by-sequence/${pad16(1)}`, safeJsonStringify({
+            key: "value",
+         }));
+
+         db.put(`by-sequence/${pad16(2)}`, safeJsonStringify({
+            key2: "value2",
+         }));
+
+         const [value] = await promisify(adapter._get, docId, { rev });
+
+         expect(value).toEqual({
+            _id: docId,
+            _rev: rev,
+            key: "value",
+         });
+      });
+
+      it("retrieves latest document revision", async () => {
+         jest.spyOn(LevelDB.prototype, "getBuf").mockReturnValueOnce([1, 2]);
+
+         const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
+
+         const docId = "doc-id-1";
+         const rev = "1-08758510f84820b60dbaa16e642fcf8b";
+
+         db.put(`document-store/${docId}`, safeJsonStringify({
+            id: docId,
+            rev_tree: [
+               {
+                  pos: 1,
+                  ids: [
+                     "ff002d9c0442a077f8d349f04fb61113",
+                     {
+                        status: "available"
+                     },
+                     [],
+                  ],
+               },
+               {
+                  pos: 1,
+                  ids: [
+                     "08758510f84820b60dbaa16e642fcf8b",
+                     {
+                        status: "available"
+                     },
+                     [],
+                  ],
+               },
+            ],
+            rev: "1-08758510f84820b60dbaa16e642fcf8b",
+            rev_map: {
+               "1-ff002d9c0442a077f8d349f04fb61113": 1,
+               "1-08758510f84820b60dbaa16e642fcf8b": 2,
+            },
+         }));
+
+         db.put(`by-sequence/${pad16(1)}`, safeJsonStringify({
+            key: "value",
+         }));
+
+         db.put(`by-sequence/${pad16(2)}`, safeJsonStringify({
+            key2: "value2",
+         }));
+
+         const [value] = await promisify(adapter._get, docId, { latest: true });
+
+         expect(value).toEqual({
+            _id: docId,
+            _rev: rev,
+            key2: "value2",
+         });
+      });
+
+      it("fails to retrieve a deleted document revision", async () => {
+         jest.spyOn(LevelDB.prototype, "getBuf").mockReturnValueOnce([1, 2]);
+
+         const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
+
+         const docId = "doc-id-1";
+         const rev = "1-2ab15399e3f54a4ef2cd60bf7867c30c";
+
+         db.put(`document-store/${docId}`, safeJsonStringify({
+            id: "doc-id-1",
+            deleted: true,
+            rev_tree: [
+               {
+                  pos: 1,
+                  ids: [
+                     "ff002d9c0442a077f8d349f04fb61113",
+                     {
+                        status: "available"
+                     },
+                     [],
+                  ],
+               },
+               {
+                  pos: 1,
+                  ids: [
+                     "2ab15399e3f54a4ef2cd60bf7867c30c",
+                     {
+                        status: "available",
+                        deleted: true
+                     },
+                     [],
+                  ],
+               },
+            ],
+            rev: "1-2ab15399e3f54a4ef2cd60bf7867c30c",
+            rev_map: {
+               "1-ff002d9c0442a077f8d349f04fb61113": 1,
+               "1-2ab15399e3f54a4ef2cd60bf7867c30c": 2,
+            },
+         }));
+
+         await expect(promisify(adapter._get, docId, { rev })).rejects.toThrow("missing");
+      });
+
+      it("fails to retrieve if document revision map is corrupted", async () => {
+         jest.spyOn(LevelDB.prototype, "getBuf").mockReturnValueOnce([1, 2]);
+
+         const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
+
+         const docId = "doc-id-1";
+         const rev = "1-2ab15399e3f54a4ef2cd60bf7867c30c";
+
+         db.put(`document-store/${docId}`, safeJsonStringify({
+            id: "doc-id-1",
+            rev_tree: [
+               {
+                  pos: 1,
+                  ids: [
+                     "ff002d9c0442a077f8d349f04fb61113",
+                     {
+                        status: "available"
+                     },
+                     [],
+                  ],
+               },
+               {
+                  pos: 1,
+                  ids: [
+                     "2ab15399e3f54a4ef2cd60bf7867c30c",
+                     {
+                        status: "available"
+                     },
+                     [],
+                  ],
+               },
+            ],
+            rev: "1-2ab15399e3f54a4ef2cd60bf7867c30c",
+            rev_map: {
+               "1-ff002d9c0442a077f8d349f04fb61113": 1,
+            },
+         }));
+
+         await expect(promisify(adapter._get, docId, { rev })).rejects.toThrow("Invalid rev format");
+      });
+
+      it("fails to retrieve document with missing data", async () => {
+         jest.spyOn(LevelDB.prototype, "getBuf").mockReturnValueOnce([1, 2]);
+
+         const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
+
+         const docId = "doc-id-1";
+         const rev = "1-2ab15399e3f54a4ef2cd60bf7867c30c";
+
+         db.put(`document-store/${docId}`, safeJsonStringify({
+            id: "doc-id-1",
+            rev_tree: [
+               {
+                  pos: 1,
+                  ids: [
+                     "ff002d9c0442a077f8d349f04fb61113",
+                     {
+                        status: "available"
+                     },
+                     [],
+                  ],
+               },
+               {
+                  pos: 1,
+                  ids: [
+                     "2ab15399e3f54a4ef2cd60bf7867c30c",
+                     {
+                        status: "available"
+                     },
+                     [],
+                  ],
+               },
+            ],
+            rev: "1-2ab15399e3f54a4ef2cd60bf7867c30c",
+            rev_map: {
+               "1-ff002d9c0442a077f8d349f04fb61113": 1,
+               "1-2ab15399e3f54a4ef2cd60bf7867c30c": 2,
+            },
+         }));
+
+         await expect(promisify(adapter._get, docId, { rev })).rejects.toThrow("missing");
+      });
+
    });
 });

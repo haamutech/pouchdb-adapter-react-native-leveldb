@@ -16,7 +16,7 @@ This adapter is still pretty much work in progress (early PoC is done already). 
 - [x] Prove that `destroyLevelDatabase` works in `backend.js`
 - [x] Prove that `destroyLevelDatabase` works in `backend.native.js`
 - [x] Prove that `_info` works
-- [ ] Prove that `_get` works
+- [x] Prove that `_get` works
 - [ ] Prove that `_allDocs` works
 - [x] Prove that `_getRevisionTree` works
 - [x] Prove that `_bulkDocs` works
