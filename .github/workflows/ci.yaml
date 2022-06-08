@@ -5,6 +5,7 @@ on:
     paths:
       - '**.js'
       - '**.json'
+      - '**.yaml'
       - Dockerfile
 
 jobs:
