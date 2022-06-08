@@ -14,7 +14,7 @@ This adapter relies on awesome work with [react-native-leveldb](https://github.c
    - Some shortages on how document revisions are handled (please see TODO comments in code)
 - PouchDB is a perfect fit for mobile applications: you can write data locally and let database sync it automatically to cloud when the connection is available
 - Supports [react-native-web](https://github.com/necolas/react-native-web) for development purposes so that you can test your application in a web browser
-   - Stores data to local storage
+   - Stores data to [local storage](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage)
 - Fully tested, code coverage ~100%
 
 ### Usage
