@@ -5,7 +5,6 @@ const Database = PouchDB
    .plugin(Adapter)
    .defaults({
       adapter: "react-native-leveldb",
-      revs_limit: 50,
    });
 
 beforeEach(() => {

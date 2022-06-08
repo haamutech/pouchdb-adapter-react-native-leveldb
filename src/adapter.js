@@ -194,13 +194,13 @@ function RNLevelDBAdapter(opts, callback) {
             return callback(createError(MISSING_DOC, "missing"));
 
          // Pick the latest revision.
-         if (opts.latest)
+         if (!rev/*opts.latest*/)
             rev = metadata.rev;
 
          // Otherwise, if revision is not given, get the winning revision from metadata.
          // TODO: figure out what the winning rev is and if this works correctly here.
-         else if (!rev)
-            rev = getWinningRev(metadata);
+         /*else if (!rev)
+            rev = getWinningRev(metadata);*/
 
          // Verify that revision is not deleted.
          if (isDeleted(metadata, rev))
