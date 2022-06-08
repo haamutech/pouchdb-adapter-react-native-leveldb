@@ -100,6 +100,23 @@ describe("RNLevelDBAdapter", () => {
          expect(spyLevelDBConstructor).toHaveBeenCalledWith(databaseName, true, false);
       });
 
+      it("fails to open a database", async () => {
+         const name = "dbname";
+         const close = jest.spyOn(LevelDB.prototype, "close");
+
+         await expect(new Promise((_, reject) => {
+            Adapter.call({}, { name }, error => {
+               if (!error)
+                  throw new Error("ball");
+
+               reject(error);
+            });
+         })).rejects.toThrow("ball");
+
+         expect(Adapter.Handlers.has(`${name}.db`)).toBe(false);
+         expect(close).toHaveBeenCalledTimes(1);
+      });
+
       it("reads doc_count and update_seq bookkeeping values", async () => {
          const getBuf = jest.spyOn(LevelDB.prototype, "getBuf");
 
@@ -852,6 +869,382 @@ describe("RNLevelDBAdapter", () => {
 
          await expect(promisify(adapter._get, docId, { rev })).rejects.toThrow("missing");
       });
+   });
 
+   describe("_allDocs", () => {
+      it("iterates all rows", async () => {
+         const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
+
+         const docs = [
+            { _id: "doc-id-1", key: "value" },
+            { _id: "doc-id-2", key2: "value2" },
+            { _id: "doc-id-3", key3: "value3" },
+         ];
+
+         const [values] = await promisify(adapter._bulkDocs, { docs }, {});
+
+         expect(values.every(x => x.ok)).toBe(true);
+
+         const metadatas = docs.map(x => safeJsonParse(db.getStr(`document-store/${x._id}`)));
+
+         const [result] = await promisify(adapter._allDocs, {});
+
+         expect(result).toEqual({
+            offset: 0,
+            total_rows: docs.length,
+            rows: docs.map((x, i) => ({
+               id: x._id,
+               key: x._id,
+               value: {
+                  rev: metadatas[i].rev
+               },
+            })),
+         });
+      });
+
+      it("returns update_seq if requested", async () => {
+         jest.spyOn(LevelDB.prototype, "getBuf").mockReturnValueOnce([0, 42]);
+
+         const adapter = await createAdapter();
+
+         const [result] = await promisify(adapter._allDocs, { update_seq: true });
+
+         expect(result).toEqual({
+            offset: 0,
+            total_rows: 0,
+            update_seq: 42,
+            rows: [],
+         });
+      });
+
+      it("closes the iterator", async () => {
+         const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
+
+         let close;
+
+         {
+            const originalNewIterator = db.newIterator;
+
+            db.newIterator = () => {
+               const iterator = originalNewIterator.call(db);
+
+               close = jest.spyOn(iterator, "close");
+
+               return iterator;
+            };
+         }
+
+         await promisify(adapter._allDocs, { update_seq: true });
+
+         expect(close).toHaveBeenCalledTimes(1);
+      });
+
+      it("closes the iterator on error", async () => {
+         const adapter = await createAdapter();
+         const { db } = Adapter.Handlers.get();
+
+         let close;
+
+         {
+            const originalNewIterator = db.newIterator;
+
+            db.newIterator = () => {
+               const iterator = originalNewIterator.call(db);
+
+               jest.spyOn(iterator, "seek").mockImplementation(() => { throw new Error("ball"); });
+
+               close = jest.spyOn(iterator, "close");
+
+               return iterator;
+            };
+         }
+
+         await expect(promisify(adapter._allDocs, { update_seq: true })).rejects.toThrow("ball");
+
+         expect(close).toHaveBeenCalledTimes(1);
+      });
+
+      it("skips rows", async () => {
+         const adapter = await createAdapter();
+
+         const docs = [
+            { _id: "doc-id-1", key: "value" },
+            { _id: "doc-id-2", key2: "value2" },
+            { _id: "doc-id-3", key3: "value3" },
+         ];
+
+         const skip = 2;
+
+         const [values] = await promisify(adapter._bulkDocs, { docs }, {});
+
+         expect(values.every(x => x.ok)).toBe(true);
+
+         const [result] = await promisify(adapter._allDocs, { skip });
+
+         expect(result).toEqual({
+            offset: skip,
+            total_rows: docs.length,
+            rows: docs.slice(skip).map(x => ({
+               id: x._id,
+               key: x._id,
+               value: expect.anything(),
+            })),
+         });
+      });
+
+      it("stops iterating when end key is reached", async () => {
+         const adapter = await createAdapter();
+
+         const docs = [
+            { _id: "doc-id-1", key: "value" },
+            { _id: "doc-id-2", key2: "value2" },
+            { _id: "doc-id-3", key3: "value3" },
+         ];
+
+         const endKey = "doc-id-2";
+
+         const [values] = await promisify(adapter._bulkDocs, { docs }, {});
+
+         expect(values.every(x => x.ok)).toBe(true);
+
+         const [result] = await promisify(adapter._allDocs, { endKey });
+
+         expect(result).toEqual({
+            offset: 0,
+            total_rows: docs.length,
+            rows: docs.slice(0, docs.length - 1).map(x => ({
+               id: x._id,
+               key: x._id,
+               value: expect.anything(),
+            })),
+         });
+      });
+
+      it("stops iterating before end key is reached", async () => {
+         const adapter = await createAdapter();
+
+         const docs = [
+            { _id: "doc-id-1", key: "value" },
+            { _id: "doc-id-2", key2: "value2" },
+            { _id: "doc-id-3", key3: "value3" },
+         ];
+
+         const endKey = "doc-id-2";
+
+         const [values] = await promisify(adapter._bulkDocs, { docs }, {});
+
+         expect(values.every(x => x.ok)).toBe(true);
+
+         const [result] = await promisify(adapter._allDocs, { endKey, inclusive_end: false });
+
+         expect(result).toEqual({
+            offset: 0,
+            total_rows: docs.length,
+            rows: docs.slice(0, docs.length - 2).map(x => ({
+               id: x._id,
+               key: x._id,
+               value: expect.anything(),
+            })),
+         });
+      });
+
+      it("starts iterating from start key", async () => {
+         const adapter = await createAdapter();
+
+         const docs = [
+            { _id: "doc-id-1", key: "value" },
+            { _id: "doc-id-2", key2: "value2" },
+            { _id: "doc-id-3", key3: "value3" },
+         ];
+
+         const startKey = "doc-id-2";
+
+         const [values] = await promisify(adapter._bulkDocs, { docs }, {});
+
+         expect(values.every(x => x.ok)).toBe(true);
+
+         const [result] = await promisify(adapter._allDocs, { startKey });
+
+         expect(result).toEqual({
+            offset: 0,
+            total_rows: docs.length,
+            rows: docs.slice(1).map(x => ({
+               id: x._id,
+               key: x._id,
+               value: expect.anything(),
+            })),
+         });
+      });
+
+      it("includes only selected keys", async () => {
+         const adapter = await createAdapter();
+
+         const docs = [
+            { _id: "doc-id-1", key: "value" },
+            { _id: "doc-id-2", key2: "value2" },
+            { _id: "doc-id-3", key3: "value3" },
+         ];
+
+         const keys = [docs[2]._id, docs[1]._id];
+
+         const [values] = await promisify(adapter._bulkDocs, { docs }, {});
+
+         expect(values.every(x => x.ok)).toBe(true);
+
+         const [result] = await promisify(adapter._allDocs, { keys });
+
+         expect(result).toEqual({
+            offset: 0,
+            total_rows: docs.length,
+            rows: keys.map(x => ({
+               id: x,
+               key: x,
+               value: {
+                  rev: expect.anything(),
+               },
+            })),
+         });
+      });
+
+      it("includes deleted documents if explicitly requested via keys", async () => {
+         const adapter = await createAdapter();
+
+         const docs = [
+            { _id: "doc-id-1", key: "value" },
+            { _id: "doc-id-2", key2: "value2" },
+            { _id: "doc-id-3", key3: "value3" },
+         ];
+
+         const deletedDoc = {
+            _id: docs[1]._id,
+            _deleted: true
+         };
+
+         const [values1] = await promisify(adapter._bulkDocs, { docs }, {});
+
+         expect(values1.every(x => x.ok)).toBe(true);
+
+         const [values2] = await promisify(adapter._bulkDocs, { docs: [deletedDoc] }, {});
+
+         expect(values2.every(x => x.ok)).toBe(true);
+
+         const [result] = await promisify(adapter._allDocs, { keys: [deletedDoc._id] });
+
+         expect(result).toEqual({
+            offset: 0,
+            total_rows: docs.length - 1,
+            rows: [deletedDoc].map(x => ({
+               id: x._id,
+               key: x._id,
+               value: {
+                  rev: expect.anything(),
+                  deleted: true,
+               },
+            })),
+         });
+      });
+
+      it("includes a selected key", async () => {
+         const adapter = await createAdapter();
+
+         const docs = [
+            { _id: "doc-id-1", key: "value" },
+            { _id: "doc-id-2", key2: "value2" },
+            { _id: "doc-id-3", key3: "value3" },
+         ];
+
+         const key = docs[1]._id;
+
+         const [values] = await promisify(adapter._bulkDocs, { docs }, {});
+
+         expect(values.every(x => x.ok)).toBe(true);
+
+         const [result] = await promisify(adapter._allDocs, { key });
+
+         expect(result).toEqual({
+            offset: 0,
+            total_rows: docs.length,
+            rows: [
+               {
+                  id: key,
+                  key: key,
+                  value: {
+                     rev: expect.anything(),
+                  },
+               },
+            ],
+         });
+      });
+
+      it("includes data when requested", async () => {
+         const adapter = await createAdapter();
+
+         const docs = [
+            { _id: "doc-id-1", key: "value" },
+            { _id: "doc-id-2", key2: "value2" },
+            { _id: "doc-id-3", key3: "value3" },
+         ];
+
+         const [values] = await promisify(adapter._bulkDocs, { docs }, {});
+
+         expect(values.every(x => x.ok)).toBe(true);
+
+         const [result] = await promisify(adapter._allDocs, { include_docs: true });
+
+         expect(result).toEqual({
+            offset: 0,
+            total_rows: docs.length,
+            rows: docs.map(x => {
+               const doc = { ...x };
+               delete doc._id;
+
+               return {
+                  id: x._id,
+                  key: x._id,
+                  value: {
+                     rev: expect.anything(),
+                  },
+                  doc,
+               };
+            }),
+         });
+      });
+
+      it("includes null data when requested if deleted", async () => {
+         const adapter = await createAdapter();
+
+         const doc = {
+            _id: "doc-id-1",
+            key: "value"
+         };
+
+         const [values1] = await promisify(adapter._bulkDocs, { docs: [doc] }, {});
+
+         expect(values1.every(x => x.ok)).toBe(true);
+
+         const [values2] = await promisify(adapter._bulkDocs, { docs: [{ _id: doc._id, _deleted: true }] }, {});
+
+         expect(values2.every(x => x.ok)).toBe(true);
+
+         const [result] = await promisify(adapter._allDocs, { key: doc._id, include_docs: true });
+
+         expect(result).toEqual({
+            offset: 0,
+            total_rows: 0,
+            rows: [
+               {
+                  id: doc._id,
+                  key: doc._id,
+                  value: {
+                     rev: expect.anything(),
+                     deleted: true,
+                  },
+                  doc: null
+               },
+            ],
+         });
+      });
    });
 });

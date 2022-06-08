@@ -87,7 +87,7 @@ function RNLevelDBAdapter(opts, callback) {
             return callback(createError(MISSING_BULK_DOCS));
 
          // Create PouchDB internal document structures for input.
-         const docs = req.docs.map(x => parseDoc(x, opts.new_edits !== false, this.__opts));
+         const docs = req.docs.map(x => parseDoc({ ...x }, opts.new_edits !== false, this.__opts));
          const fetchedDocs = new Map();
          const handler = use();
 
@@ -242,25 +242,33 @@ function RNLevelDBAdapter(opts, callback) {
          // TODO: support opts.attachment
          // TODO: support opts.binary
          // TODO: support opts.descending
-         // TODO: support opts.keys
-         // TODO: support opts.key
 
-         const { db, docCount, updateSeq } = use();
-         const iter = db.newIterator();
+         const handler = use();
+         const iter = handler.db.newIterator();
+
+         // If the key option is defined, override keys option with a singular key.
+         if (opts.key)
+            opts.keys = [opts.key];
 
          try {
-            const skip = opts.skip ?? 0;
-
-            // Seek iterator to start key position.
+            // Seek the iterator to start key position.
             iter.seek(documentStore(opts.startKey));
+
+            const skip = opts.skip ?? 0;
 
             // Advance iterator number of skips.
             for (let i = 0; i < skip; ++i)
                iter.next();
 
             const rows = [];
+            const keyToRowMap = new Map();
 
-            for (let i = 0; iter.valid() && (opts.limit === undefined || i < opts.limit); iter.next(), ++i) {
+            // Iterate the rows until
+            //  - iterator is valid;
+            //  - keys are within document store namespace;
+            //  - limit is not reached;
+            //  - end key is not reached.
+            for (let i = 0; iter.valid() && iter.keyStr().startsWith(documentStore()) && (opts.limit === undefined || i < opts.limit); iter.next(), ++i) {
                const stop = iter.keyStr() === documentStore(opts.endKey);
 
                // Stop early if end is exclusive.
@@ -268,8 +276,7 @@ function RNLevelDBAdapter(opts, callback) {
                   break;
 
                const metadata = safeJsonParse(iter.valueStr());
-               const rev = getWinningRev(metadata);
-               const docDeleted = isDeleted(metadata, rev);
+               const rev = metadata.rev; // TODO: use winning rev?
 
                const row = {
                   id: metadata.id,
@@ -277,33 +284,49 @@ function RNLevelDBAdapter(opts, callback) {
                   value: { rev },
                };
 
-               if (!docDeleted || opts.deleted === "ok") {
-                  const seq = metadata.rev_map[rev];
+               if (isDeleted(metadata, rev))
+                  row.value.deleted = true;
 
-                  if (docDeleted) {
-                     row.value.deleted = true;
+               // Do not include deleted documents unless keys are specified.
+               if (!row.value.deleted || opts.keys) {
+                  if (opts.include_docs) {
 
-                     if (opts.include_docs)
+                     // Set document data to null if it is deleted.
+                     if (row.value.deleted)
                         row.doc = null;
-                  }
-                  else if (opts.include_docs)
-                     row.doc = safeJsonParse(db.getStr(bySequence(seq)));
 
+                     // Otherwise, retrieve data from database.
+                     else {
+                        const seq = metadata.rev_map[rev];
+
+                        row.doc = safeJsonParse(handler.db.getStr(bySequence(seq)));
+                     }
+                  }
+
+                  keyToRowMap.set(row.key, rows.length);
                   rows.push(row);
                }
 
+               // Handle inclusive end stop.
                if (stop)
                   break;
             }
 
             const result = {
-               rows,
                offset: skip,
-               total_rows: docCount,
+               total_rows: handler.docCount,
             };
 
             if (opts.update_seq)
-               result.update_seq = updateSeq;
+               result.update_seq = handler.updateSeq;
+
+            // Re-order rows to match the ordering in keys array.
+            if (opts.keys)
+               result.rows = opts.keys.map(x => rows[keyToRowMap.get(x)] ?? createError(MISSING_DOC));
+
+            // Otherwise, use rows as-is.
+            else
+               result.rows = rows;
 
             callback(null, result);
          }
@@ -334,11 +357,8 @@ function RNLevelDBAdapter(opts, callback) {
             callback();
          });
       },
-
-      // TODO: support attachments
    );
 
-   
    const db = new LevelDB(databaseName, true, false);
 
    try {
