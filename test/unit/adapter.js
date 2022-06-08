@@ -1,6 +1,6 @@
-const install = require("../src/adapter");
-const { spyLevelDBConstructor, LevelDB, destroyLevelDatabase } = require("../src/backend");
-const { pad16 } = require("../src/utils");
+const install = require("../../src/adapter");
+const { spyLevelDBConstructor, LevelDB, destroyLevelDatabase } = require("../../src/backend");
+const { pad16 } = require("../../src/utils");
 const { toArraybuf } = jest.requireActual("react-native-leveldb/lib/commonjs/fake");
 
 const {
@@ -13,7 +13,7 @@ const {
    createError,
 } = require("pouchdb-errors");
 
-jest.mock("../src/backend", () => {
+jest.mock("../../src/backend", () => {
    const { FakeLevelDB } = jest.requireActual("react-native-leveldb/lib/commonjs/fake");
    const spyLevelDBConstructor = jest.fn();
 
@@ -148,9 +148,8 @@ describe("RNLevelDBAdapter", () => {
          const [value] = await promisify(adapter._info);
 
          expect(value).toEqual({
-            docCount: 42,
-            updateSeq: 3,
-            backend_adapter: "react-native-leveldb",
+            doc_count: 42,
+            update_seq: 3,
          });
       });
    });
@@ -676,10 +675,15 @@ describe("RNLevelDBAdapter", () => {
 
          const [value] = await promisify(adapter._get, docId, { rev });
 
+         const metadata = safeJsonParse(db.getStr(`document-store/${docId}`));
+
          expect(value).toEqual({
-            _id: docId,
-            _rev: rev,
-            key: "value",
+            doc: {
+               _id: docId,
+               _rev: rev,
+               key: "value",
+            },
+            metadata,
          });
       });
 
@@ -733,10 +737,15 @@ describe("RNLevelDBAdapter", () => {
 
          const [value] = await promisify(adapter._get, docId, { latest: true });
 
+         const metadata = safeJsonParse(db.getStr(`document-store/${docId}`));
+
          expect(value).toEqual({
-            _id: docId,
-            _rev: rev,
-            key2: "value2",
+            doc: {
+               _id: docId,
+               _rev: rev,
+               key2: "value2",
+            },
+            metadata
          });
       });
 

@@ -1,6 +1,6 @@
 {
   "name": "pouchdb-adapter-react-native-leveldb",
-  "version": "0.0.1-alpha.0",
+  "version": "0.5.0",
   "description": "PouchDB adapter for React Native that uses LevelDB as its backing store.",
   "main": "./src/adapter.js",
   "scripts": {
@@ -31,6 +31,7 @@
   "devDependencies": {
     "jest": "^28.1.1",
     "nodemon": "^2.0.16",
+    "pouchdb-core": "^7.3.0",
     "react-native-leveldb": "^3.0.4"
   },
   "peerDependencies": {

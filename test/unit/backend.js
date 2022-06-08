@@ -1,4 +1,4 @@
-const { LevelDB, destroyLevelDatabase } = require("../src/backend");
+const { LevelDB, destroyLevelDatabase } = require("../../src/backend");
 const { toString } = require("react-native-leveldb/lib/commonjs/fake");
 
 it("exports LevelDB", () => {
