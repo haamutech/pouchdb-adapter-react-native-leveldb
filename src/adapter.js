@@ -3,9 +3,6 @@ const { pad16 } = require("./utils");
 
 const {
    winningRev: getWinningRev,
-   traverseRevTree,
-   compactTree,
-   collectConflicts,
    latest: getLatest
 } = require("pouchdb-merge");
 
@@ -16,21 +13,14 @@ const {
 
 const {
    MISSING_DOC,
-   REV_CONFLICT,
-   INVALID_ID,
    INVALID_REV,
    NOT_OPEN,
-   BAD_ARG,
-   MISSING_STUB,
    MISSING_BULK_DOCS,
-   MISSING_ID,
    createError
 } = require("pouchdb-errors");
 
 const {
-   allDocsKeysQuery,
    isDeleted,
-   isLocalId,
    parseDoc,
    processDocs
  } = require("pouchdb-adapter-utils");
@@ -38,6 +28,8 @@ const {
 // https://github.com/pouchdb/pouchdb/blob/master/packages/node_modules/pouchdb-core/src/adapter.js
 
 function makeApi(self, ...methods) {
+   self._remote = false;
+
    for (let i = 0; i < methods.length; ++i)
       self[methods[i].name] = methods[i].bind(self);
 }
@@ -71,12 +63,11 @@ function RNLevelDBAdapter(opts, callback) {
    makeApi(this,
 
       function _info(callback) {
-         const { docCount, updateSeq } = use();
+         const { docCount: doc_count, updateSeq: update_seq } = use();
 
          callback(null, {
-            docCount,
-            updateSeq,
-            backend_adapter: "react-native-leveldb",
+            doc_count,
+            update_seq,
          });
       },
 
@@ -234,7 +225,7 @@ function RNLevelDBAdapter(opts, callback) {
          doc._id = metadata.id;
          doc._rev = rev;
 
-         callback(null, doc);
+         callback(null, { doc, metadata });
       },
 
       function _allDocs(opts, callback) {
