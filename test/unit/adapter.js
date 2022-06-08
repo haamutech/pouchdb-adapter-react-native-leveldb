@@ -1,7 +1,6 @@
 const install = require("../../src/adapter");
 const { spyLevelDBConstructor, LevelDB, destroyLevelDatabase } = require("../../src/backend");
 const { pad16 } = require("../../src/utils");
-const { toArraybuf } = jest.requireActual("react-native-leveldb/lib/commonjs/fake");
 
 const {
    safeJsonParse,
@@ -291,8 +290,7 @@ describe("RNLevelDBAdapter", () => {
          expect(updateSeq).toBe(seq);
          expect(docCount).toBe(1);
 
-         expect(new Uint8Array(bookkeeping))
-            .toEqual(new Uint8Array(toArraybuf(Uint32Array.of(docCount, updateSeq))));
+         expect(bookkeeping).toEqual(Uint32Array.of(docCount, updateSeq).buffer);
 
          expect(put.mock.calls).toEqual([
             [`document-store/${doc._id}`, expect.anything()],
@@ -437,8 +435,7 @@ describe("RNLevelDBAdapter", () => {
          expect(updateSeq).toBe(seq);
          expect(docCount).toBe(1);
 
-         expect(new Uint8Array(bookkeeping))
-            .toEqual(new Uint8Array(toArraybuf(Uint32Array.of(docCount, updateSeq))));
+         expect(bookkeeping).toEqual(Uint32Array.of(docCount, updateSeq).buffer);
 
          expect(put.mock.calls).toEqual([
             [`document-store/${doc._id}`, expect.anything()],
@@ -608,8 +605,7 @@ describe("RNLevelDBAdapter", () => {
          expect(updateSeq).toBe(seq);
          expect(docCount).toBe(0);
 
-         expect(new Uint8Array(bookkeeping))
-            .toEqual(new Uint8Array(toArraybuf(Uint32Array.of(docCount, updateSeq))));
+         expect(bookkeeping).toEqual(Uint32Array.of(docCount, updateSeq).buffer);
 
          expect(put.mock.calls).toEqual([
             [`document-store/${doc._id}`, expect.anything()],

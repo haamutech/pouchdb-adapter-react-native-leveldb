@@ -140,10 +140,7 @@ function RNLevelDBAdapter(opts, callback) {
                // Update database bookkeeping values.
                handler.db.put(
                   metaStore(docCountUpdateSeqKey()),
-
-                  // TODO: should this have .buffer? Due to problems in node/jest 
-                  // it gives headaches in unit testing: https://github.com/nodejs/node/issues/20978
-                  Uint32Array.of(handler.docCount, handler.updateSeq));   
+                  Uint32Array.of(handler.docCount, handler.updateSeq).buffer);
 
                results[resultsIdx] = {
                   ok: true,
