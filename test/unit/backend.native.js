@@ -1,4 +1,4 @@
-const { LevelDB, destroyLevelDatabase } = require("../src/backend.native");
+const { LevelDB, destroyLevelDatabase } = require("../../src/backend.native");
 
 jest.mock("react-native-leveldb",  () => {
    const MockLevelDB = {

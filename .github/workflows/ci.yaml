@@ -2,10 +2,9 @@ name: CI
 
 on:
   push:
-    branches:
-      - latest
-
-# TODO: support tags
+    paths-ignore:
+      - LICENSE
+      - '**.md'
 
 jobs:
   qa:
@@ -19,19 +18,5 @@ jobs:
       - name: Build
         run: docker build -t pouchdb-adapter-react-native-leveldb .
 
-      - name: Unit test
+      - name: Test
         run: docker run --rm pouchdb-adapter-react-native-leveldb test
-
-  publish:
-    name: Publish
-    needs: [qa]
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v1
-
-      - name: NPM
-        uses: JS-DevTools/npm-publish@v1
-        with:
-          token: ${{ secrets.NPM_TOKEN }}

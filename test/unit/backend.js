@@ -1,4 +1,4 @@
-const { LevelDB, destroyLevelDatabase } = require("../src/backend");
+const { LevelDB, destroyLevelDatabase } = require("../../src/backend");
 const { toString } = require("react-native-leveldb/lib/commonjs/fake");
 
 it("exports LevelDB", () => {
@@ -114,7 +114,5 @@ describe("LevelDB", () => {
          ["key", `value for ${data[0]}`],
          ["other", `value for ${data[2]}`],
       ]);
-
-      jest.restoreAllMocks();
    });
 });

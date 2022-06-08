@@ -1,10 +1,8 @@
 const { LevelDB, destroyLevelDatabase } = require("./backend");
+const { pad16 } = require("./utils");
 
 const {
    winningRev: getWinningRev,
-   traverseRevTree,
-   compactTree,
-   collectConflicts,
    latest: getLatest
 } = require("pouchdb-merge");
 
@@ -15,55 +13,25 @@ const {
 
 const {
    MISSING_DOC,
-   REV_CONFLICT,
-   INVALID_ID,
    INVALID_REV,
    NOT_OPEN,
-   BAD_ARG,
-   MISSING_STUB,
    MISSING_BULK_DOCS,
-   MISSING_ID,
    createError
 } = require("pouchdb-errors");
 
 const {
-   allDocsKeysQuery,
    isDeleted,
-   isLocalId,
    parseDoc,
    processDocs
  } = require("pouchdb-adapter-utils");
 
 // https://github.com/pouchdb/pouchdb/blob/master/packages/node_modules/pouchdb-core/src/adapter.js
 
-function formatSeq(value) {
-   return ("0000000000000000" + value).slice(-16);
-}
-
-function parseSeq(value) {
-   return parseInt(value, 10);
-}
-
-function nextTick(f) {
-   return (...args) => {
-      setTimeout(() => f.apply(this, args), 0);
-   };
-}
-
-function safeApiCall(f, ...args) {
-   const { length, [length - 1]: callback } = args;
-
-   try {
-      f.apply(this, args);
-   }
-   catch (e) {
-      callback(e);
-   }
-}
-
 function makeApi(self, ...methods) {
+   self._remote = false;
+
    for (let i = 0; i < methods.length; ++i)
-      self[methods[i].name] = safeApiCall.bind(self, methods[i]);
+      self[methods[i].name] = methods[i].bind(self);
 }
 
 function documentStore(key) {
@@ -71,154 +39,143 @@ function documentStore(key) {
 }
 
 function bySequence(key) {
-   return `by-sequence/${formatSeq(key)}`;
+   return `by-sequence/${pad16(key)}`;
 }
 
 function metaStore(key) {
    return `meta-store/${key}`;
 }
 
-function getDocCountUpdateSeqKey() {
+function docCountUpdateSeqKey() {
    return "doc_count+update_seq";
 }
 
-const Handlers = new Map();
-
 function RNLevelDBAdapter(opts, callback) {
-   const databaseName = `${opts.name}.db`;
+   const databaseName = opts.name ? `${opts.name}.db` : undefined;
 
    function use() {
-      if (!Handlers.has(databaseName))
+      if (!RNLevelDBAdapter.Handlers.has(databaseName))
          throw createError(NOT_OPEN);
 
-      return Handlers.get(databaseName);
-   }
-
-   function getJson(key) {
-      const { db } = use();
-      const value = safeJsonParse(db.getStr(key));
-
-      if (!value)
-         throw createError(MISSING_DOC, "missing");
-
-      return value;
-   }
-
-   function getBinary(key) {
-      const { db } = use();
-      const value = db.getBuf(key);
-
-      if (!value)
-         throw createError(MISSING_DOC, "missing");
-
-      return value;
+      return RNLevelDBAdapter.Handlers.get(databaseName);
    }
 
    makeApi(this,
 
       function _info(callback) {
-         const { docCount, updateSeq } = use();
+         const { docCount: doc_count, updateSeq: update_seq } = use();
 
          callback(null, {
-            docCount,
-            updateSeq,
-            backend_adapter: "react-native-leveldb",
+            doc_count,
+            update_seq,
          });
       },
 
-      function _put(doc, opts, callback) {
-         // TODO: support opts.force
+      function _bulkDocs(req, opts, callback) {
 
+         // 'docs' is required in _bulkDocs
+         if (!req?.docs)
+            return callback(createError(MISSING_BULK_DOCS));
+
+         // Create PouchDB internal document structures for input.
+         const docs = req.docs.map(x => parseDoc({ ...x }, opts.new_edits !== false, this.__opts));
+         const fetchedDocs = new Map();
          const handler = use();
 
-         if (doc._id === undefined)
-            return callback(createError(MISSING_ID));
+         // Fetch existing docs.
+         for (let i = 0; i < docs.length; ++i) {
+            const id = docs[i].metadata.id;
+            let metadata = fetchedDocs.get(id);
 
-         // Otherwise, handle the case where either a new document is created or existing is replaced.
+            if (!metadata) {
+               metadata = safeJsonParse(handler.db.getStr(documentStore(id)));
 
-         doc = parseDoc(doc, opts.new_edits !== false, this.__opts);
+               if (metadata)
+                  fetchedDocs.set(id, metadata);
+            }
 
-         if (doc.error)
-            return callback(doc.error);
+            // Initialize revision map used to map particular revisions
+            // to data sequences.
+            docs[i].metadata.rev_map = metadata?.rev_map;
+         }
 
-         if (doc.metadata && !doc.metadata.rev_map)
-            doc.metadata.rev_map = {};
+         const results = [];
 
-         // Update database sequence number bookkeeping value.
-         ++handler.updateSeq;
-
-         // Set revision and sequence number.
-         doc.metadata.rev_map[doc.metadata.rev] =
-            doc.metadata.seq =
-               handler.updateSeq;
-
-         const docDeleted = doc.data._deleted === true;
-         let metadataOk = false;
-         let sequenceOk = false;
-
-         this._get(doc.metadata.id, { rev: doc.metadata.rev }, (_, existingDoc) => {
+         processDocs(undefined, docs, this, fetchedDocs, null, results, (doc, rev, isWinningRevDeleted, isNewRevDeleted, isUpdate, delta, resultsIdx, callback) => {
             let docCountDelta = 0;
 
-            // Update document count bookkeeping value.
-            if (existingDoc)
-               if (docDeleted)
+            // Decrement document count if we are deleting existing document.
+            if (isUpdate) {
+               if (isNewRevDeleted)
                   docCountDelta = -1;
-
-            // Return error if document is deleted but it does not exist.
-            else if (docDeleted)
-               return callback(createError(MISSING_DOC));
+            }
 
             // Increment document count since new document is created.
             else
                docCountDelta = +1;
 
-            // Update document count bookkeeping value to include non-deleted documents.
+            const nextSeq = ++handler.updateSeq;
             handler.docCount += docCountDelta;
 
-            // Apply metadata and data modifications to database.
+            // Map next sequence number to revision.
+            doc.metadata.rev_map = {
+               ...doc.metadata.rev_map,
+               [doc.metadata.rev]: nextSeq,
+            };
+
+            let metadataOk = false;
+            let dataOk = !isNewRevDeleted;
+
+            // Apply modifications to database.
             try {
                handler.db.put(documentStore(doc.metadata.id), safeJsonStringify(doc.metadata));
                metadataOk = true;
 
-               handler.db.put(bySequence(handler.updateSeq), safeJsonStringify(doc.data));
-               sequenceOk = true;
+               // Write data if revision is not deleted.
+               if (!isNewRevDeleted) {
+                  handler.db.put(bySequence(nextSeq), safeJsonStringify(doc.data));
+                  dataOk = true;
+               }
 
-               // Store updated bookkeeping values.
-               handler.db.put(metaStore(getDocCountUpdateSeqKey()), new Uint32Array([
-                  handler.docCount,
-                  handler.updateSeq,
-               ]).buffer);
+               // Update database bookkeeping values.
+               handler.db.put(
+                  metaStore(docCountUpdateSeqKey()),
+                  Uint32Array.of(handler.docCount, handler.updateSeq).buffer);
 
-               callback(null, {
+               results[resultsIdx] = {
                   ok: true,
                   id: doc.metadata.id,
                   rev: doc.metadata.rev,
-               });
+               };
             }
 
-            // Rollback modifications if failed.
+            // Rollback the changes on error.
             catch (e) {
                if (metadataOk) {
 
-                  // Restore the state where document did not exist.
-                  if (!existingDoc)
-                     handler.db.delete(documentStore(doc.metadata.id));
+                  // Revert metadata back when updating.
+                  if (isUpdate && fetchedDocs.has(doc.metadata.id))
+                     handler.db.put(documentStore(doc.metadata.id), safeJsonStringify(fetchedDocs.get(doc.metadata.id)));
 
-                  // Otherwise, restore the original document state.
+                  // Otherwise, restore the state where document did not exist.
                   else
-                     handler.db.put(documentStore(doc.metadata.id), existingDoc.metadata);
+                     handler.db.delete(documentStore(doc.metadata.id));
                }
 
-               // Restore the state where new updated sequence did not exist.
-               if (sequenceOk)
-                  handler.db.delete(bySequence(handler.updateSeq));
+               // Revert data by deleting it.
+               if (dataOk)
+                  handler.db.delete(bySequence(nextSeq));
 
-               // Revert bookkeeping values back to original.
+               // Revert database bookkeeping values.
                handler.docCount -= docCountDelta;
                --handler.updateSeq;
 
-               callback(e);
+               results[resultsIdx] = e;
             }
+
+            callback();
+         }, opts, error => {
+            callback(error, results);
          });
       },
 
@@ -229,32 +186,39 @@ function RNLevelDBAdapter(opts, callback) {
          // TODO: support opts.conflicts
          // TODO: support opts.attachments
 
-         const metadata = getJson(documentStore(id));
+         const { db } = use();
+         const metadata = safeJsonParse(db.getStr(documentStore(id)));
          let rev = opts.rev;
 
-         // If revision is not given, get the winning rev from metadata.
-         if (!rev) {
-            rev = getWinningRev(metadata);
+         if (!metadata)
+            return callback(createError(MISSING_DOC, "missing"));
 
-            if (isDeleted(metadata, rev))
-               throw createError(MISSING_DOC, "deleted");
-         }
+         // Pick the latest revision.
+         if (!rev/*opts.latest*/)
+            rev = metadata.rev;
 
-         // Otherwise, get the latest revision if requested.
-         else if (opts.latest)
-            rev = getLatest(rev, metadata);
+         // Otherwise, if revision is not given, get the winning revision from metadata.
+         // TODO: figure out what the winning rev is and if this works correctly here.
+         /*else if (!rev)
+            rev = getWinningRev(metadata);*/
 
-         const doc = getJson(bySequence(metadata.rev_map[rev]));
+         // Verify that revision is not deleted.
+         if (isDeleted(metadata, rev))
+            return callback(createError(MISSING_DOC, "deleted"));
 
-         // Verify that document ID is not corrupted.
-         if (doc._id && doc._id !== metadata.id)
-            throw createError(MISSING_DOC, "id");
+         const seq = metadata.rev_map && metadata.rev_map[rev];
 
-         // Verify that document revision is not corrupted.
-         if (doc._rev && doc._rev !== rev)
-            throw createError(MISSING_DOC, "revision");
+         // Verify that revision map is not corrupted.
+         if (!seq)
+            return callback(createError(INVALID_REV, "corrupted"));
 
-         // Set ID and revision to match with metadata.
+         const doc = safeJsonParse(db.getStr(bySequence(seq)));
+
+         // Verify that data exists.
+         if (!doc)
+            return callback(createError(MISSING_DOC, "missing"));
+
+         // Decorate document with ID and revision from metadata.
          doc._id = metadata.id;
          doc._rev = rev;
 
@@ -266,25 +230,33 @@ function RNLevelDBAdapter(opts, callback) {
          // TODO: support opts.attachment
          // TODO: support opts.binary
          // TODO: support opts.descending
-         // TODO: support opts.keys
-         // TODO: support opts.key
 
-         const { db, docCount, updateSeq } = use();
-         const iter = db.newIterator();
+         const handler = use();
+         const iter = handler.db.newIterator();
+
+         // If the key option is defined, override keys option with a singular key.
+         if (opts.key)
+            opts.keys = [opts.key];
 
          try {
-            const skip = opts.skip ?? 0;
-
-            // Seek iterator to start key position.
+            // Seek the iterator to start key position.
             iter.seek(documentStore(opts.startKey));
+
+            const skip = opts.skip ?? 0;
 
             // Advance iterator number of skips.
             for (let i = 0; i < skip; ++i)
                iter.next();
 
             const rows = [];
+            const keyToRowMap = new Map();
 
-            for (let i = 0; iter.valid() && (opts.limit === undefined || i < opts.limit); iter.next(), ++i) {
+            // Iterate the rows until
+            //  - iterator is valid;
+            //  - keys are within document store namespace;
+            //  - limit is not reached;
+            //  - end key is not reached.
+            for (let i = 0; iter.valid() && iter.keyStr().startsWith(documentStore()) && (opts.limit === undefined || i < opts.limit); iter.next(), ++i) {
                const stop = iter.keyStr() === documentStore(opts.endKey);
 
                // Stop early if end is exclusive.
@@ -292,8 +264,7 @@ function RNLevelDBAdapter(opts, callback) {
                   break;
 
                const metadata = safeJsonParse(iter.valueStr());
-               const rev = getWinningRev(metadata);
-               const docDeleted = isDeleted(metadata, rev);
+               const rev = metadata.rev; // TODO: use winning rev?
 
                const row = {
                   id: metadata.id,
@@ -301,31 +272,49 @@ function RNLevelDBAdapter(opts, callback) {
                   value: { rev },
                };
 
-               if (!docDeleted || opts.deleted === "ok") {
-                  if (docDeleted) {
-                     row.value.deleted = true;
+               if (isDeleted(metadata, rev))
+                  row.value.deleted = true;
 
-                     if (opts.include_docs)
+               // Do not include deleted documents unless keys are specified.
+               if (!row.value.deleted || opts.keys) {
+                  if (opts.include_docs) {
+
+                     // Set document data to null if it is deleted.
+                     if (row.value.deleted)
                         row.doc = null;
-                  }
-                  else if (opts.include_docs)
-                     row.doc = getJson(bySequence(metadata.rev_map[rev]));
 
+                     // Otherwise, retrieve data from database.
+                     else {
+                        const seq = metadata.rev_map[rev];
+
+                        row.doc = safeJsonParse(handler.db.getStr(bySequence(seq)));
+                     }
+                  }
+
+                  keyToRowMap.set(row.key, rows.length);
                   rows.push(row);
                }
 
+               // Handle inclusive end stop.
                if (stop)
                   break;
             }
 
             const result = {
-               rows,
                offset: skip,
-               total_rows: docCount,
+               total_rows: handler.docCount,
             };
 
             if (opts.update_seq)
-               result.update_seq = updateSeq;
+               result.update_seq = handler.updateSeq;
+
+            // Re-order rows to match the ordering in keys array.
+            if (opts.keys)
+               result.rows = opts.keys.map(x => rows[keyToRowMap.get(x)] ?? createError(MISSING_DOC));
+
+            // Otherwise, use rows as-is.
+            else
+               result.rows = rows;
 
             callback(null, result);
          }
@@ -335,37 +324,17 @@ function RNLevelDBAdapter(opts, callback) {
       },
 
       function _getRevisionTree(docId, callback) {
-         const { rev_tree } = getJson(documentStore(docId));
+         const { db } = use();
+         const { rev_tree } = safeJsonParse(db.getStr(documentStore(docId)));
 
          callback(null, rev_tree);
-      },
-
-      function _bulkDocs({ docs: [head, ...rest] }, opts, callback) {
-         // Nothing to do if there were no documents to modify.
-         if (!head)
-            return callback(null, []);
-
-         this._put(head, opts, nextTick((error, response) => {
-            const responses = (opts?.ctx ?? []).concat([error ?? response]);
-
-            // Handle the next batch.
-            if (rest?.length > 0)
-               this._bulkDocs({ docs: rest }, {
-                  ...opts,
-                  ctx: responses,
-               }, callback);
-
-            // Otherwise, finish the bulk operation.
-            else
-               callback(null, responses);
-         }));
       },
 
       function _close(callback) {
          const { db } = use();
 
          db.close();
-         Handlers.delete(databaseName);
+         RNLevelDBAdapter.Handlers.delete(databaseName);
 
          callback();
       },
@@ -376,31 +345,29 @@ function RNLevelDBAdapter(opts, callback) {
             callback();
          });
       },
-
-      // TODO: support attachments
    );
 
-   safeApiCall(callback => {
-      const db = new LevelDB(databaseName, true, false);
+   const db = new LevelDB(databaseName, true, false);
 
-      try {
-         const [docCount, updateSeq] = new Uint32Array(db.getBuf(metaStore(getDocCountUpdateSeqKey())) ?? [0, 0]);
+   try {
+      const [docCount, updateSeq] = new Uint32Array(db.getBuf(metaStore(docCountUpdateSeqKey())) ?? [0, 0]);
 
-         Handlers.set(databaseName, {
-            docCount,
-            updateSeq,
-            db,
-         });
+      RNLevelDBAdapter.Handlers.set(databaseName, {
+         docCount,
+         updateSeq,
+         db,
+      });
 
-         callback(null);
-      }
-      catch (e) {
-         Handlers.delete(databaseName);
-         db.close();
-         throw e;
-      }
-   }, callback);
+      callback(null, this);
+   }
+   catch (e) {
+      RNLevelDBAdapter.Handlers.delete(databaseName);
+      db.close();
+      callback(e);
+   }
 }
+
+RNLevelDBAdapter.Handlers = new Map();
 
 RNLevelDBAdapter.use_prefix = false;
 
