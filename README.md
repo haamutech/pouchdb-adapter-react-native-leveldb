@@ -10,6 +10,7 @@ This adapter relies on awesome work with [react-native-leveldb](https://github.c
    - SQLite is not a NoSQL store designed to store schemaless documents
 - Almost complete implementation of PouchDB adapter API
    - No support for attachments yet
+   - No support for `_putLocal`, `_getLocal` and `_removeLocal`
    - Some shortages on how document revisions are handled (please see TODO comments from code)
 - PouchDB is a perfect fit for mobile applications: you can write data locally and let database sync it automatically to cloud when the connection is available
 - Supports [react-native-web](https://github.com/necolas/react-native-web) for development purposes so that you can test your application in a web browser
