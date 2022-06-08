@@ -1,28 +1,20 @@
 pouchdb-adapter-react-native-leveldb
 ======
 
-PouchDB adapter for React Native that uses LevelDB as its backing store. Designed to run in React Native. Its adapter name is `'react-native-leveldb'`.
+PouchDB adapter for React Native that uses LevelDB as its backing store. Designed to run in React Native. Its adapter name is `react-native-leveldb`.
 
+This adapter relies on awesome work with [react-native-leveldb](https://github.com/greentriangle/react-native-leveldb) that is a high performance standalone database for React Native. Now PouchDB actually fits in your pocket! 
 
-### Work in progress!
-
-This adapter is still pretty much work in progress (early PoC is done already). Here is a TODO list that needs to be completed before this can be used:
-
-- [ ] Support attachments
-- [ ] Support compaction
-- [ ] Implement all `TODO` comments
-- [x] Prove that `LevelDB` works in `backend.js`
-- [x] Prove that `LevelDB` is available in `backend.native.js`
-- [x] Prove that `destroyLevelDatabase` works in `backend.js`
-- [x] Prove that `destroyLevelDatabase` works in `backend.native.js`
-- [x] Prove that `_info` works
-- [x] Prove that `_get` works
-- [x] Prove that `_allDocs` works
-- [x] Prove that `_getRevisionTree` works
-- [x] Prove that `_bulkDocs` works
-- [x] Prove that `_close` works
-- [x] Prove that `_destroy` works
-
+- Faster and more versatile than AsyncStorage and SQLite
+   - AsyncStorage has size limits especially in Android
+   - SQLite is not a NoSQL store designed to store schemaless documents
+- Almost complete implementation of PouchDB adapter API
+   - No support for attachments yet
+   - Some shortages on how document revisions are handled (please see TODO comments from code)
+- PouchDB is a perfect fit for mobile applications: you can write data locally and let database sync it automatically to cloud when the connection is available
+- Supports [react-native-web](https://github.com/necolas/react-native-web) for development purposes so that you can test your application in a web browser
+   - Stores data to local storage
+- Fully tested, code coverage ~100%
 
 ### Usage
 
