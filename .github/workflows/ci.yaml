@@ -21,4 +21,4 @@ jobs:
         run: docker build -t pouchdb-adapter-react-native-leveldb .
 
       - name: Unit test
-        run: docker run --rm -t pouchdb-adapter-react-native-leveldb test
+        run: docker run --rm pouchdb-adapter-react-native-leveldb test
