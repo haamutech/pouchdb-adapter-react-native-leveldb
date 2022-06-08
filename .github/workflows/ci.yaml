@@ -1,7 +1,11 @@
 name: CI
 
 on:
-  push
+  push:
+    paths:
+      - '**.js'
+      - '**.json'
+      - Dockerfile
 
 jobs:
   qa:

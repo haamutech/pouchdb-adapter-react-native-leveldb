@@ -3,17 +3,18 @@ name: Publish
 on:
   push:
     tags:
+      - v*
 
 jobs:
   publish:
-    name: Publish
+    name: NPM
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v1
 
-      - name: NPM
+      - name: Pack
         uses: JS-DevTools/npm-publish@v1
         with:
           token: ${{ secrets.NPM_TOKEN }}
