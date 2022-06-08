@@ -1,11 +1,7 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - latest
-
-# TODO: support tags
+  push
 
 jobs:
   qa:
@@ -21,17 +17,3 @@ jobs:
 
       - name: Unit test
         run: docker run --rm pouchdb-adapter-react-native-leveldb test
-
-  publish:
-    name: Publish
-    needs: [qa]
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v1
-
-      - name: NPM
-        uses: JS-DevTools/npm-publish@v1
-        with:
-          token: ${{ secrets.NPM_TOKEN }}
