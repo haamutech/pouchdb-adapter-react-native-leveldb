@@ -2,11 +2,9 @@ name: CI
 
 on:
   push:
-    paths:
-      - '**.js'
-      - '**.json'
-      - '**.yaml'
-      - Dockerfile
+    paths-ignore:
+      - LICENSE
+      - '**.md'
 
 jobs:
   qa:
